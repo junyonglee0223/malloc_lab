@@ -53,9 +53,9 @@ team_t team = {
 #define GET(p) (*(unsigned int *)(p))
 #define PUT(p, val) (*(unsigned int*)(p) = val)
 #define GET_SIZE(p) (GET(p) & (~0x7))
-#define GET_ALLOC(p) (GET(p) & (0x7))
+#define GET_ALLOC(p) (GET(p) & (0x1))
 #define HDRP(bp) ((char*)(bp) - WSIZE)
-#define FTRP(bp) ((char*)(bp) + GET_SIZE(HDRP(bp)) - WSIZE)
+#define FTRP(bp) ((char*)(bp) + GET_SIZE(HDRP(bp)) - DSIZE)
 #define NEXT_BLEK(bp) ((char*)(bp) + GET_SIZE((char*)(bp) - WSIZE))
 #define PREV_BLEK(bp) ((char*)(bp) - GET_SIZE((char*)(bp) - DSIZE))
 
@@ -82,13 +82,16 @@ static void *extend_heap(size_t input_size){
     PUT(HDRP(bp), PACK(revise_size, 0));
     PUT(FTRP(bp), PACK(revise_size, 0));
     //epilogue block 초기화 필수인지?
+    PUT(HDRP(NEXT_BLEK(bp)), PACK(0, 1));
     return coalesce(bp);
 }
 
 static void *coalesce(void * bp){
     //this method use when erase bp block -> but why use it in extend_heap???
-    size_t prev_alloc = GET_ALLOC(PREV_BLEK(HDRP(bp)));
-    size_t next_alloc = GET_ALLOC(NEXT_BLEK(HDRP(bp)));
+    // size_t prev_alloc = GET_ALLOC(PREV_BLEK(HDRP(bp)));
+    // size_t next_alloc = GET_ALLOC(NEXT_BLEK(HDRP(bp)));
+    size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLEK(bp)));
+    size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLEK(bp)));
     size_t now_size = GET_SIZE(HDRP(bp));
     
     //case 0 - prev, next exist
@@ -126,7 +129,7 @@ static void *find_fit(size_t asize){
     //bp size 존재 시 탐색 유지
     // not alloc 상태 check, 
     //적절한 size 없을 경우 할당 불가 전달
-    void *bp = mem_heap_lo + 2*WSIZE;
+    void *bp = mem_heap_lo() + 2*WSIZE;
     while(GET_SIZE(HDRP(bp)) > 0){
         if(!GET_ALLOC(HDRP(bp)) && GET_SIZE(HDRP(bp)) >= asize){
             return bp;
@@ -160,7 +163,7 @@ static void place(void *bp, size_t asize){
 int mm_init(void)
 {
     char *heap_list_ptr;
-    //create prologue, epilogue and first block header, footer
+    //create prologue, epilogue and first blonck header, footer
     if((heap_list_ptr = mem_sbrk(4 * WSIZE)) == (void*)-1)return -1;
     PUT(heap_list_ptr, 0);
     PUT(heap_list_ptr + 1*WSIZE, PACK(DSIZE, 1));
@@ -206,10 +209,10 @@ void *mm_malloc(size_t size){
         asize = DSIZE * 2;
     }
     else{
-        asize = DSIZE * (size + DSIZE + DSIZE - 1)/DSIZE;
+        asize = DSIZE * ((size + DSIZE + DSIZE - 1)/DSIZE);
     }
 
-    if((bp = find_fit(bp)) == NULL){
+    if((bp = find_fit(asize)) != NULL){
         place(bp, asize);
         return bp;
     }
@@ -266,8 +269,7 @@ void mm_free(void *ptr)
 
 void *mm_realloc(void *ptr, size_t size){
     if(ptr == NULL){
-        ptr = mm_malloc(size);
-        return;
+        return mm_malloc(size);
     }
     if(size <= 0){
         mm_free(ptr);
