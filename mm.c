@@ -59,9 +59,8 @@ team_t team = {
 #define NEXT_BLEK(bp) ((char*)(bp) + GET_SIZE((char*)(bp) - WSIZE))
 #define PREV_BLEK(bp) ((char*)(bp) - GET_SIZE((char*)(bp) - DSIZE))
 
-//아래와 같이 수정 가능한지 추후에 체크
-// #define NEXT_BLEK2(bp) ((char*)(bp) + GET_SIZE(HDRP(bp)))
-// #define PREV_BLEK2(bp) ((char*)(bp) - GET_SIZE(HDRP(bp) - WSIZE))
+#define GET_SUCC(bp) (*((void**)(char*)(bp) + WSIZE))
+#define GET_PRED(bp) (*(void**)(bp))
 
 /* 
  * mm_init - initialize the malloc package.
@@ -71,6 +70,9 @@ static void *extend_heap(size_t input_size);
 static void *coalesce(void* bp);
 static void *find_fit(size_t asize);
 static void place(void *bp, size_t asize);
+
+static void *find_next_fit(size_t asize);
+static void *save_next_ptr;
 
 
 static void *extend_heap(size_t input_size){
@@ -139,6 +141,29 @@ static void *find_fit(size_t asize){
     return NULL;
 }
 
+static void *find_next_fit(size_t asize){
+    void * bp = save_next_ptr;
+    //!!주의 사항 
+    //save ptr부터 탐색 시작해서 ptr 끝까지
+    //null로 구현해도 되겠지만 size?? epilogue 문제 때문에 size를 기준으로 한다.
+    for(;(GET_SIZE(HDRP(bp)) > 0); bp = NEXT_BLEK(bp)){
+        if((!GET_ALLOC(HDRP(bp)))&&(GET_SIZE(HDRP(bp)) >= asize)){
+            save_next_ptr = bp;
+            return bp;
+        }
+    }
+    //초기화 후 save_ptr 이전까지
+    for(bp = mem_heap_lo() + 2*WSIZE;(bp != save_next_ptr); bp = NEXT_BLEK(bp)){
+        if((!GET_ALLOC(HDRP(bp)))&&(GET_SIZE(HDRP(bp)) >= asize)){
+            save_next_ptr = bp;
+            return bp;
+        }
+    }
+    return NULL;
+}
+
+
+
 //할당하고자 하는 위치에 setting
 //case 2가지 -> 현위치 적합시 바로 할당 
 //-> 현위치보다 사이즈 크면 나눠서 블록 구분
@@ -170,25 +195,12 @@ int mm_init(void)
     PUT(heap_list_ptr + 2*WSIZE, PACK(DSIZE, 1));
     PUT(heap_list_ptr + 3*WSIZE, PACK(0, 1));
 
+    save_next_ptr = heap_list_ptr + 2*WSIZE;
+
     if(extend_heap(CHUNKSIZE/WSIZE) == NULL)return -1;
     return 0;
 }
 
-/* 
- * mm_malloc - Allocate a block by incrementing the brk pointer.
- *     Always allocate a block whose size is a multiple of the alignment.
- */
-// void *mm_malloc(size_t size)
-// {
-//     int newsize = ALIGN(size + SIZE_T_SIZE);
-//     void *p = mem_sbrk(newsize);
-//     if (p == (void *)-1)
-// 	return NULL;
-//     else {
-//         *(size_t *)p = size;
-//         return (void *)((char *)p + SIZE_T_SIZE);
-//     }
-// }
 
 
 // size, asize, 
@@ -212,7 +224,7 @@ void *mm_malloc(size_t size){
         asize = DSIZE * ((size + DSIZE + DSIZE - 1)/DSIZE);
     }
 
-    if((bp = find_fit(asize)) != NULL){
+    if((bp = find_next_fit(asize)) != NULL){
         place(bp, asize);
         return bp;
     }
@@ -237,25 +249,6 @@ void mm_free(void *ptr)
     coalesce(ptr);
 }
 
-// /*
-//  * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
-//  */
-// void *mm_realloc(void *ptr, size_t size)
-// {
-//     void *oldptr = ptr;
-//     void *newptr;
-//     size_t copySize;
-    
-//     newptr = mm_malloc(size);
-//     if (newptr == NULL)
-//       return NULL;
-//     copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
-//     if (size < copySize)
-//       copySize = size;
-//     memcpy(newptr, oldptr, copySize);
-//     mm_free(oldptr);
-//     return newptr;
-// }
 
 
 //ptr == null -> just mm_malloc to new ptr
