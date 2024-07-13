@@ -71,235 +71,291 @@ static void *coalesce(void* bp);
 static void *find_fit(size_t asize);
 static void place(void *bp, size_t asize);
 
-static void *find_next_fit(size_t asize);
-static void *save_next_ptr;
+//static void *find_next_fit(size_t asize);
+//static void *save_next_ptr;
 
 static void* free_list;
 static void split_free_block(void *bp);
 static void add_free_block(void *bp);   //LIFO way
+//static void add_free_block_address_info(void *bp);//address info first
+
+#define DEBUG
+
+#ifdef DEBUG
+#define dbg_printf(...) printf(__VA_ARGS__)
+#else
+#define dbg_printf(...)
+#endif
 
 
-int mm_init(void)
-{
-    char *heap_list_ptr;
-    //create prologue, epilogue and first blonck header, footer
-    if((heap_list_ptr = mem_sbrk(4 * WSIZE)) == (void*)-1)return -1;
-    PUT(heap_list_ptr, 0);
-    PUT(heap_list_ptr + 1*WSIZE, PACK(DSIZE, 1));
-    PUT(heap_list_ptr + 2*WSIZE, PACK(DSIZE, 1));
-    PUT(heap_list_ptr + 3*WSIZE, PACK(0, 1));
+/********************************************************************** */
+/*초기 구현할 때 메서드 구분, msbrk 함수 가져와서 사용하고
+기존 implicit의 경우에는 4B 사용했는데
+여기서는 pred, succ 추가해서 8B로 사용한다. 
+*/
 
-    save_next_ptr = heap_list_ptr + 2*WSIZE;
+int mm_init(void){
+    /*초기 할당 시 
+    prologue(header, footer), 
+    header, pred, succ, footer
+    epilogue(header, footer)
+    이렇게 8block 할당한다.
+    */
+    dbg_printf("\nstart init %p\n", free_list); //teset
+    //if(free_list != NULL)return 0;  //시작이 아닐 경우 추가
+    
+    if((free_list = mem_sbrk(WSIZE*8)) == (void*)-1)return -1;
+    //dbg_printf("mem_start_brk: %p \t mem_brk: %p \tmem_size: %d\n", mem_heap_lo(), mem_heap_hi(), mem_heapsize);
 
-    if(extend_heap(CHUNKSIZE/WSIZE) == NULL)return -1;
+    
+    PUT(free_list, 0);  //padding
+    
+    PUT(free_list+WSIZE, PACK(DSIZE, 1));   //prologue header
+    PUT(free_list+2*WSIZE, PACK(DSIZE, 1)); //prologue footer
+
+    PUT(free_list+3*WSIZE, PACK(2*DSIZE, 0));   //header
+    PUT(free_list+4*WSIZE, NULL);               //pred
+    PUT(free_list+5*WSIZE, NULL);               //succ
+    PUT(free_list+6*WSIZE, PACK(2*DSIZE, 0));   //footer
+
+    PUT(free_list+7*WSIZE, PACK(0, 1)); //epilogue
+
+    free_list += 4*WSIZE;
+
+    //extendheap은 왜 사용하는 거지?
+    if(extend_heap(CHUNKSIZE/WSIZE) == (void*)-1)return -1;
+    //dbg_printf("test first block header and footer address %p \t %p\n", HDRP(free_list), FTRP(free_list));
+    //dbg_printf("compare address dist and size %d %d\n", (FTRP(free_list) - HDRP(free_list)), 8*WSIZE);
+    //dbg_printf("test epilogue and next block header %p\t%p\n", free_list + 3*WSIZE,  HDRP(NEXT_BLEK(free_list)));
+    // dbg_printf("max heap address: %p\n", mem_heap_hi()+1);
+    // dbg_printf("epilogue address: %p\n", free_list + 3*WSIZE);
+    // dbg_printf("header of next blk address: %p\n", HDRP(NEXT_BLEK(free_list)));
+    
+    dbg_printf("end init %p\n", free_list); //test
+
     return 0;
 }
 
-
-
-// size, asize, 
-// 사이즈 조정
-// 공간 확장 및 재할당
-// find_fit 메소드 필요!!!
-// 존재하지 않을 경우 힙 확장 로직
-void *mm_malloc(size_t size){
-    size_t asize;
-    size_t extendsize;
-    char* bp;
-
-    if(size == 0){
-        return NULL;
+void *mm_malloc(size_t size){   
+    dbg_printf("\n\nmalloc start! %zu\n", size);                      //test
+    /************************testcode************************/
+    dbg_printf("find free address!: ");
+    void * tmp = free_list;
+    while(tmp != NULL){
+        dbg_printf("%p, %zu\t", tmp, GET_SIZE(HDRP(tmp)));
+        tmp = GET_SUCC(tmp);
     }
+    dbg_printf("\n");
+    /************************testcode************************/
 
-    if(size <= DSIZE){
-        asize = DSIZE * 2;
+    void *bp;
+    /*입력 받은 size를 변형한다.
+    DSIZE 규격으로 입력받지 않았을 수 있기 때문*/
+    size_t csize;
+    if(size == 0)   return NULL;
+
+    if(size <= 2*DSIZE){
+        csize = 2*DSIZE;
     }
     else{
-        asize = DSIZE * ((size + DSIZE + DSIZE - 1)/DSIZE);
+        csize = ((size + DSIZE + DSIZE -1)/DSIZE)*DSIZE;
     }
 
-    if((bp = find_next_fit(asize)) != NULL){
-        place(bp, asize);
+    if((bp = find_fit(csize))!=NULL){
+        place(bp, csize);
+        dbg_printf("malloc finish!\n");                     //test
         return bp;
     }
 
-    extendsize = MAX(asize, CHUNKSIZE);
-
-    if((bp = extend_heap((extendsize)/WSIZE)) == NULL){
-        return NULL;
-    }
-    place(bp, asize);
+    size_t extend_size = MAX(CHUNKSIZE, csize);
+    if((bp = extend_heap(extend_size/WSIZE)) == NULL)return NULL;
+    place(bp, csize);
+    dbg_printf("malloc finish!\n");                     //test
     return bp;
 }
 
-/*
- * mm_free - Freeing a block does nothing.
- */
-void mm_free(void *ptr)
-{
-    size_t size = GET_SIZE(HDRP(ptr));
-    PUT(HDRP(ptr), PACK(size, 0));
-    PUT(FTRP(ptr), PACK(size, 0));
-    coalesce(ptr);
-}
 
 
-
-//ptr == null -> just mm_malloc to new ptr
-//size error mm_free 
-// mm_malloc -> 
-//copy data -> data size 문제
-//현재 size가 copysize 보다 작을 경우 잘린 상태로 담는 방식으로 한다.
-
-
-
-
-void *mm_realloc(void *ptr, size_t size){
-    if(ptr == NULL){
-        return mm_malloc(size);
-    }
+void *mm_realloc(void* ptr, size_t size){
+    dbg_printf("\n\nrealloc start! %p\t%zu\n", ptr, size);                      //test
+    if(ptr == NULL)return mm_malloc(size);
     if(size <= 0){
         mm_free(ptr);
         return;
     }
-    void* new_ptr = mm_malloc(size);
-    if(new_ptr == NULL)
-        return NULL;
+    void *new_ptr = mm_malloc(size);
+    if(new_ptr == NULL)return NULL;
 
-    size_t copySize = GET_SIZE(HDRP(ptr)) - DSIZE;
-    if(copySize > size)
-        copySize = size;
-    
-    memcpy(new_ptr, ptr, copySize);
+    size_t copy_size = GET_SIZE(HDRP(ptr)) - DSIZE;
+    if(copy_size > size)
+        copy_size = size;
+    memcpy(new_ptr, ptr, copy_size);
     mm_free(ptr);
-
+    dbg_printf("realloc finish! \n");                      //test
     return new_ptr;
-
 }
 
 
-
-
-
-static void split_free_block(void *bp){
-    
+void mm_free(void *ptr){
+    dbg_printf("\n\nfree start! %p\n", ptr);                      //test
+    size_t size = GET_SIZE(HDRP(ptr));
+    PUT(HDRP(ptr), PACK(size, 0));
+    PUT(FTRP(ptr), PACK(size, 0));
+    coalesce(ptr);
+    /************************testcode************************/
+    dbg_printf("find free address!: ");
+    void * tmp = free_list;
+    while(tmp != NULL){
+        dbg_printf("%p, %zu\t", tmp, GET_SIZE(HDRP(tmp)));
+        tmp = GET_SUCC(tmp);
+    }
+    /************************testcode************************/
+    dbg_printf("\nfree finish!\n");                      //test
+    return;
 }
 
-
-static void *extend_heap(size_t input_size){
-    char *bp;
-    //사이즈 조정 - pedding 해야 하기 때문에 필수임
-    size_t revise_size = input_size % 2 ? (input_size + 1)*WSIZE : (input_size)*WSIZE;
-    if((long)(bp = mem_sbrk(revise_size)) == -1)return NULL;
-    //extend 시 메모리 공간 새로 생기니까 header, footer setting 필수
-    PUT(HDRP(bp), PACK(revise_size, 0));
-    PUT(FTRP(bp), PACK(revise_size, 0));
-    //epilogue block 초기화 필수인지?
-    PUT(HDRP(NEXT_BLEK(bp)), PACK(0, 1));
-    return coalesce(bp);
-}
-
-static void *coalesce(void * bp){
-    //this method use when erase bp block -> but why use it in extend_heap???
-    // size_t prev_alloc = GET_ALLOC(PREV_BLEK(HDRP(bp)));
-    // size_t next_alloc = GET_ALLOC(NEXT_BLEK(HDRP(bp)));
-    size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLEK(bp)));
-    size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLEK(bp)));
-    size_t now_size = GET_SIZE(HDRP(bp));
-    
-    //case 0 - prev, next exist
-    if(prev_alloc && next_alloc){
-        return bp;
+static void *find_fit(size_t size){
+    void* bp = free_list;
+    while(bp != NULL){
+        //size 이상인 주소를 찾으면 반환하고 종료
+        if(GET_SIZE(HDRP(bp)) >= size) return bp;
+        bp = GET_SUCC(bp);
     }
-    //case 1 - just front
-        //update now header, next footer
-        //size check
-    else if(prev_alloc && !next_alloc){
-        now_size += GET_SIZE(HDRP(NEXT_BLEK(bp)));
-        PUT(HDRP(bp), PACK(now_size, 0));
-        PUT(FTRP(bp), PACK(now_size, 0));
-    }
-    //case 2 - just back
-    else if(!prev_alloc && next_alloc){
-        now_size += GET_SIZE(HDRP(PREV_BLEK(bp)));
-        PUT(HDRP(PREV_BLEK(bp)), PACK(now_size, 0));
-        PUT(FTRP(bp), PACK(now_size, 0));
-        bp = PREV_BLEK(bp);
-    }
-    //case 3 - nothing
-    else{
-        now_size += GET_SIZE(HDRP(PREV_BLEK(bp))) + (GET_SIZE(NEXT_BLEK(bp)));
-        PUT(HDRP(PREV_BLEK(bp)), PACK(now_size, 0));
-        PUT(FTRP(NEXT_BLEK(bp)), PACK(now_size, 0));
-        bp = PREV_BLEK(bp);
-    }
-    return bp;
-}
-
-//implicit first-fit 방식으로 구현
-static void *find_fit(size_t asize){
-    //first start point address
-    //bp size 존재 시 탐색 유지
-    // not alloc 상태 check, 
-    //적절한 size 없을 경우 할당 불가 전달
-    void *bp = mem_heap_lo() + 2*WSIZE;
-    while(GET_SIZE(HDRP(bp)) > 0){
-        if(!GET_ALLOC(HDRP(bp)) && GET_SIZE(HDRP(bp)) >= asize){
-            return bp;
-        }
-        bp = NEXT_BLEK(bp);
-    }
+    //없으면 null 반환
     return NULL;
 }
 
-static void *find_next_fit(size_t asize){
-    void * bp = save_next_ptr;
-    //!!주의 사항 
-    //save ptr부터 탐색 시작해서 ptr 끝까지
-    //null로 구현해도 되겠지만 size?? epilogue 문제 때문에 size를 기준으로 한다.
-    for(;(GET_SIZE(HDRP(bp)) > 0); bp = NEXT_BLEK(bp)){
-        if((!GET_ALLOC(HDRP(bp)))&&(GET_SIZE(HDRP(bp)) >= asize)){
-            save_next_ptr = bp;
-            return bp;
-        }
-    }
-    //초기화 후 save_ptr 이전까지
-    for(bp = mem_heap_lo() + 2*WSIZE;(bp != save_next_ptr); bp = NEXT_BLEK(bp)){
-        if((!GET_ALLOC(HDRP(bp)))&&(GET_SIZE(HDRP(bp)) >= asize)){
-            save_next_ptr = bp;
-            return bp;
-        }
-    }
-    return NULL;
-}
-
-
-
-//할당하고자 하는 위치에 setting
-//case 2가지 -> 현위치 적합시 바로 할당 
-//-> 현위치보다 사이즈 크면 나눠서 블록 구분
-//그 외의 조건은 find_fit에서 알아서 찾는다.
-
-
-static void place(void *bp, size_t asize){
+static void place(void* bp, size_t size){
+    /*할당하기 위해서 현재 주소를 freelist에서 가져온다.*/
+    split_free_block(bp);
     size_t csize = GET_SIZE(HDRP(bp));
-    if((csize - asize) >= 2*DSIZE){
-        PUT(HDRP(bp), PACK(asize, 1));
-        PUT(FTRP(bp), PACK(asize, 1));
+    size_t rsize = csize - size;
+    if(rsize >= 2*DSIZE){
+        //dbg_printf("too big!\n");       //test
+        //dbg_printf("\t %p\t%zu\n", bp, GET_SIZE(HDRP(bp))); //test
+        PUT(HDRP(bp), PACK(size, 1));
+        PUT(FTRP(bp), PACK(size, 1));
 
-        PUT(HDRP(NEXT_BLEK(bp)), PACK(csize - asize, 0));
-        PUT(FTRP(NEXT_BLEK(bp)), PACK(csize - asize, 0));
+        PUT(HDRP(NEXT_BLEK(bp)), PACK(rsize, 0));
+        PUT(FTRP(NEXT_BLEK(bp)), PACK(rsize, 0));
+        //dbg_printf("too big!%zu\t%p\t%p\n", GET_SIZE(HDRP(bp)), bp, NEXT_BLEK(bp));      //test
+        //dbg_printf("after split %p \t %zu", bp, GET_SIZE(HDRP(bp)));
+        //dbg_printf("\t%p\t%zu\n", NEXT_BLEK(bp), GET_SIZE(HDRP(NEXT_BLEK(bp))));
+        add_free_block(NEXT_BLEK(bp));
     }
     else{
         PUT(HDRP(bp), PACK(csize, 1));
         PUT(FTRP(bp), PACK(csize, 1));
     }
+    return;
+}
+
+static void *coalesce(void* bp){
+    dbg_printf("coalescing!!! %p \t %zu\n", bp, GET_SIZE(HDRP(bp)));//test
+    size_t size = GET_SIZE(HDRP(bp));
+    size_t prev_alloc = GET_ALLOC(HDRP(PREV_BLEK(bp)));
+    size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLEK(bp)));
+
+    if(prev_alloc && next_alloc){
+        add_free_block(bp);
+        return bp;
+    }
+    else if(prev_alloc && !next_alloc){
+        dbg_printf("\tcase 2\t %p \t size: %zu\n", NEXT_BLEK(bp), GET_SIZE(HDRP(NEXT_BLEK(bp))));
+        split_free_block(NEXT_BLEK(bp));
+        size += GET_SIZE(HDRP(NEXT_BLEK(bp)));
+        PUT(HDRP(bp), PACK(size, 0));
+        PUT(FTRP(bp), PACK(size, 0));
+    }
+    else if(!prev_alloc && next_alloc){
+        dbg_printf("\tcase 3\t %p \t size: %zu\n", PREV_BLEK(bp), GET_SIZE(HDRP(PREV_BLEK(bp))));
+        //test
+        split_free_block(PREV_BLEK(bp));
+        size += GET_SIZE(HDRP(PREV_BLEK(bp)));
+        PUT(HDRP(PREV_BLEK(bp)), PACK(size, 0));
+        PUT(FTRP(bp), PACK(size, 0));
+        bp = PREV_BLEK(bp);
+    }
+    else{
+        dbg_printf("\tcase 4\t prev: %p \t size: %zu\n", PREV_BLEK(bp), GET_SIZE(HDRP(PREV_BLEK(bp))));
+        dbg_printf("\tcase 4\t next: %p \t size: %zu\n", NEXT_BLEK(bp), GET_SIZE(HDRP(NEXT_BLEK(bp))));
+        
+        split_free_block(NEXT_BLEK(bp));
+        split_free_block(PREV_BLEK(bp));
+        //next footer?
+        size += (GET_SIZE(HDRP(PREV_BLEK(bp))) + GET_SIZE(HDRP(NEXT_BLEK(bp))));
+        PUT(HDRP(PREV_BLEK(bp)), PACK(size, 0));
+        PUT(FTRP(NEXT_BLEK(bp)), PACK(size, 0));
+        bp = PREV_BLEK(bp);
+    }
+    dbg_printf("\tafter coalescing %p size: %zu\n", bp, GET_SIZE(HDRP(bp)));
+    add_free_block(bp);
+    dbg_printf("coalescing complete!!!\n");
+    return bp;
+}
+
+static void *extend_heap(size_t block_size){
+    /*size를 입력 받고 조정하는게 좋지 않나
+        굳이 Wsize로 나눠서 받아야 하나?*/
+    /*그래도 기왕 코드 그렇게 돼있으니까 
+        구현하고 나중에 수정하는 방향으로*/
+    
+    size_t resize = block_size%2 ? (block_size+1)*WSIZE : block_size*WSIZE;
+    void *bp;
+    if((bp = mem_sbrk(resize))==(void*)-1)return NULL;
+    //dbg_printf("\nthis is start of extend heap ptr %p\n", bp);
+    //extend block header, footer 할당
+    PUT(HDRP(bp), PACK(resize, 0));
+    PUT(FTRP(bp), PACK(resize, 0));
+    //epilogue 할당
+    PUT(NEXT_BLEK(HDRP(bp)), PACK(0, 1));
+    //add_free_block(bp);
+    dbg_printf("extend success!\n");      //test
+    return coalesce(bp);
+}
+
+static void split_free_block(void *bp){
+    void *bp_nxt = GET_SUCC(bp);
+    void *bp_prv = GET_PRED(bp);
+    if(bp_nxt && bp_prv){
+        GET_PRED(bp_nxt) = bp_prv;
+        GET_SUCC(bp_prv) = bp_nxt;
+    }
+    else if(!bp_nxt && bp_prv){
+        GET_SUCC(bp_prv) = NULL;
+    }
+    //succ 주소를 free_list로 설정
+    else if(bp_nxt && !bp_prv){
+        GET_PRED(bp_nxt) = NULL;
+        free_list = bp_nxt;
+    }
+    else{
+        free_list = NULL;
+    }
+    //해당 주소 succ, pred null로 설정
+    GET_SUCC(bp) = NULL;
+    GET_PRED(bp) = NULL;
+    return;
 }
 
 
 
+static void add_free_block(void *bp){
+    //input bp에 null 여부만 체크
+    if(bp == NULL)return;
+    //기존 first block 과 pred, succ 관계 
+    GET_SUCC(bp) = free_list;
+    //free list가 null 인 경우 체크
+    if(free_list != NULL)
+        GET_PRED(free_list) = bp;
+    GET_PRED(bp) = NULL;
+    free_list = bp;
+    //coalesce(bp);
+    dbg_printf("addfreelist success %p\n", free_list);  //test
+    return;
+}
 
 
 
-
+/********************************************************************** */
 
